@@ -1,0 +1,6 @@
+- Get time signature
+- Quantize form data to bars
+- Save a file
+- Analysie form structures 
+- Extract functional harmony
+- plot patterns frequency
