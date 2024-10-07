@@ -6,8 +6,8 @@ This class is used to extract the form of a song using the chordino library
 
 '''
 import os
-from chord_extractor.extractors import Chordino
-from chord_extractor.extractors import Chordino
+from chord_extractor.extractors import Chordino, TuningMode
+
 import json
 import matplotlib.pyplot as plt
 import librosa
@@ -27,9 +27,17 @@ class ChordChange:
         return f"ChordChange(chord='{self.chord}', timestamp={self.timestamp})"
     
 class formExtractor():
+    
     def __init__(self):
         #Declare the chordino object
-        self.chordino = Chordino(roll_on=1, spectral_shape=0.7)
+        self.chordino = Chordino(
+            use_nnls=True,                  # Use approximate transcription (Non-Negative Least Squares)
+            roll_on=1,                      # Adjust the spectral roll-on (range: 0 - 5)
+            tuning_mode=TuningMode.LOCAL,   # Set the tuning mode (e.g., GLOBAL, LOCAL)
+            spectral_whitening=0.8,         # Set spectral whitening (range: 0 - 1)
+            spectral_shape=0.6,             # Set spectral shape (range: 0.5 - 0.9)
+            boost_n_likelihood=0.1,         # Adjust the boost likelihood of the 'N' (no chord) label
+        )
         self.y = None
         self.sr = None
         self.chords = None
@@ -55,6 +63,8 @@ class formExtractor():
     #--------------------------------------------------------
     #Extract the chords
     def getChords(self, audio_path):
+        # Create a Chordino instance with custom parameters
+        print(self.chordino._params)
         #Extract chords from the audio file
         chords = self.chordino.extract(audio_path)
         return chords
