@@ -3,3 +3,7 @@ eval "$(ssh-agent -s)".pub
 
 #cache
 src/__pycache__/*
+
+# suno/
+# udio/
+# lastfm/

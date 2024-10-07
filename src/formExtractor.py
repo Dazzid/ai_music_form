@@ -101,115 +101,16 @@ class formExtractor():
         return bars
     
     #--------------------------------------------------------
-    def getFormAndSave(self, K, audio_path, id_file, path):
-        #first get the audio data
-        self.getData(audio_path)
-        
-        BINS_PER_OCTAVE = 12 * 3
-        N_OCTAVES = 7
-        C = librosa.amplitude_to_db(np.abs(librosa.cqt(y=self.y, sr=self.sr, bins_per_octave=BINS_PER_OCTAVE, n_bins=N_OCTAVES * BINS_PER_OCTAVE)), ref=np.max)
-        
-        tempo, beats = librosa.beat.beat_track(y=self.y, sr=self.sr, trim=False)
-        Csync = librosa.util.sync(C, beats, aggregate=np.median)
-
-        # For plotting purposes, we'll need the timing of the beats
-        # we fix_frames to include non-beat frames 0 and C.shape[1] (final frame)
-        
-        beat_times = librosa.frames_to_time(librosa.util.fix_frames(beats, x_min=0), sr=self.sr)
-        R = librosa.segment.recurrence_matrix(Csync, width=3, mode='affinity', sym=True)
-
-        # Enhance diagonals with a median filter (Equation 2)
-        df = librosa.segment.timelag_filter(scipy.ndimage.median_filter)
-        Rf = df(R, size=(1, 7))
-        
-        mfcc = librosa.feature.mfcc(y=self.y, sr=self.sr)
-        Msync = librosa.util.sync(mfcc, beats)
-
-        path_distance = np.sum(np.diff(Msync, axis=1)**2, axis=0)
-        sigma = np.median(path_distance)
-        path_sim = np.exp(-path_distance / sigma)
-
-        R_path = np.diag(path_sim, k=1) + np.diag(path_sim, k=-1)
-        
-        deg_path = np.sum(R_path, axis=1)
-        deg_rec = np.sum(Rf, axis=1)
-
-        mu = deg_path.dot(deg_path + deg_rec) / np.sum((deg_path + deg_rec)**2)
-
-        A = mu * Rf + (1 - mu) * R_path
-        
-        L = scipy.sparse.csgraph.laplacian(A, normed=True)
-
-        # and its spectral decomposition
-        evals, evecs = scipy.linalg.eigh(L)
-
-        # We can clean this up further with a median filter.
-        # This can help smooth over small discontinuities
-        evecs = scipy.ndimage.median_filter(evecs, size=(9, 1))
-
-        # cumulative normalization is needed for symmetric normalize laplacian eigenvectors
-        Cnorm = np.cumsum(evecs**2, axis=1)**0.5
-
-        # If we want k clusters, use the first k normalized eigenvectors.
-        # Fun exercise: see how the segmentation changes as you vary k
-
-        k = K
-        X = evecs[:, :k] / Cnorm[:, k-1:k]
-        
-        # Check for NaN or infinite values in X and clean them
-        if np.isnan(X).any() or np.isinf(X).any():
-            X[np.isnan(X)] = 0.0
-            X[np.isinf(X)] = 0.0
-        
-        KM = KMeans(n_clusters=k, n_init=10)
-
-        seg_ids = KM.fit_predict(X)
-        
-        bound_beats = 1 + np.flatnonzero(seg_ids[:-1] != seg_ids[1:])
-
-        # Count beat 0 as a boundary
-        bound_beats = librosa.util.fix_frames(bound_beats, x_min=0)
-
-        # Compute the segment label for each boundary
-        bound_segs = list(seg_ids[bound_beats])
-
-        # Convert beat indices to frames
-        bound_frames = beats[bound_beats]
-
-        # Make sure we cover to the end of the track
-        bound_frames = librosa.util.fix_frames(bound_frames, x_min=None, x_max=C.shape[1]-1)
-        
-        #Identify unique labels in the order they first appear
-        unique_labels = []
-        for label in bound_segs:
-            if label not in unique_labels:
-                unique_labels.append(label)
-
-        #Create a mapping from old labels to new labels starting from 1
-        label_mapping = {old_label: new_label for new_label, old_label in enumerate(unique_labels, start=1)}
-
-        #Apply the mapping to bound_segs to generate new_bound_segs
-        new_bound_segs = [label_mapping[label] for label in bound_segs]
-        
-        #Populate the data dictionary    
-        self.data_dict['sr'] = self.sr
-        self.data_dict['chords'] = self.chords
-        self.data_dict['bars'] = self.bars
-        self.data_dict['bound_frames'] = bound_frames
-        self.data_dict['bound_segs'] = new_bound_segs
-        
-        self.saveData(self.data_dict, id_file, path)
-        
-        return self.data_dict
-    
     #Get the y
     def get_y(self):
         return self.y
     
+    #--------------------------------------------------------
     #get the sr
     def get_sr(self):
         return self.sr
     
+    #--------------------------------------------------------
     def amplitud_to_db(self, y, sr, plotIt=False):
         BINS_PER_OCTAVE = 12 * 3
         N_OCTAVES = 7
@@ -314,7 +215,6 @@ class formExtractor():
 
         seg_ids = KM.fit_predict(X)
 
-        #Let’s use these k components to cluster beats into segments (Algorithm 1)
         if plotIt:
             # and plot the results
             fig, ax = plt.subplots(ncols=2, sharey=True, figsize=(8, 4))
@@ -388,11 +288,19 @@ class formExtractor():
         return data
 
     #-------------------------------------------------------
-     # Save the data into a json file
-    def saveData(self, data_dict, id_file, path):
+    # Save the data into a json file
+    def saveData(self, data_dict, id_file, path, tonality=None, functional_harmony=None):
+        """
+        Save the data into a JSON file.
+        - data_dict: The data to be saved.
+        - id_file: The ID of the file.
+        - path: The path to the directory where the file will be saved.
+        - tonality: Optional tonality information to be included in the file.
+        - functional_harmony: Optional functional harmony information to be included in the file.
+        """
+
         # Save the data into a json file
         # Define the path to the JSON file
-        
         name = id_file + '.json'
         myPathName = os.path.join(path, name)
 
@@ -401,13 +309,124 @@ class formExtractor():
             print(f"Error: The directory '{path}' does not exist.")
             return
 
-        #print('Generating File:', name)
+        # Add optional tonality and functional_harmony to the data dictionary if provided
+        if tonality:
+            data_dict['tonality'] = tonality
+        if functional_harmony:
+            data_dict['functional_harmony'] = functional_harmony
+
         # Convert data_dict to a JSON-serializable format
         serializable_data_dict = self.convert_to_serializable(data_dict)
+
         # Save the JSON-serializable data_dict to a file
         try:
             with open(myPathName, 'w') as json_file:
                 json.dump(serializable_data_dict, json_file, indent=4)
-            #print(f"File saved successfully at {myPathName}")
+            # print(f"File saved successfully at {myPathName}")
         except Exception as e:
             print(f"An error occurred while saving the file: {e}")
+
+        
+    #--------------------------------------------------------
+    def getFormAndSave(self, K, audio_path, id_file, path):
+        #first get the audio data
+        self.getData(audio_path)
+        
+        BINS_PER_OCTAVE = 12 * 3
+        N_OCTAVES = 7
+        C = librosa.amplitude_to_db(np.abs(librosa.cqt(y=self.y, sr=self.sr, bins_per_octave=BINS_PER_OCTAVE, n_bins=N_OCTAVES * BINS_PER_OCTAVE)), ref=np.max)
+        
+        tempo, beats = librosa.beat.beat_track(y=self.y, sr=self.sr, trim=False)
+        Csync = librosa.util.sync(C, beats, aggregate=np.median)
+
+        # For plotting purposes, we'll need the timing of the beats
+        # we fix_frames to include non-beat frames 0 and C.shape[1] (final frame)
+        
+        beat_times = librosa.frames_to_time(librosa.util.fix_frames(beats, x_min=0), sr=self.sr)
+        R = librosa.segment.recurrence_matrix(Csync, width=3, mode='affinity', sym=True)
+
+        # Enhance diagonals with a median filter (Equation 2)
+        df = librosa.segment.timelag_filter(scipy.ndimage.median_filter)
+        Rf = df(R, size=(1, 7))
+        
+        mfcc = librosa.feature.mfcc(y=self.y, sr=self.sr)
+        Msync = librosa.util.sync(mfcc, beats)
+
+        path_distance = np.sum(np.diff(Msync, axis=1)**2, axis=0)
+        sigma = np.median(path_distance)
+        path_sim = np.exp(-path_distance / sigma)
+
+        R_path = np.diag(path_sim, k=1) + np.diag(path_sim, k=-1)
+        
+        deg_path = np.sum(R_path, axis=1)
+        deg_rec = np.sum(Rf, axis=1)
+
+        mu = deg_path.dot(deg_path + deg_rec) / np.sum((deg_path + deg_rec)**2)
+
+        A = mu * Rf + (1 - mu) * R_path
+        
+        L = scipy.sparse.csgraph.laplacian(A, normed=True)
+
+        # and its spectral decomposition
+        evals, evecs = scipy.linalg.eigh(L)
+
+        # We can clean this up further with a median filter.
+        # This can help smooth over small discontinuities
+        evecs = scipy.ndimage.median_filter(evecs, size=(9, 1))
+
+        # cumulative normalization is needed for symmetric normalize laplacian eigenvectors
+        Cnorm = np.cumsum(evecs**2, axis=1)**0.5
+
+        # If we want k clusters, use the first k normalized eigenvectors.
+        # Fun exercise: see how the segmentation changes as you vary k
+
+        k = K
+        X = evecs[:, :k] / Cnorm[:, k-1:k]
+        
+        # Check for NaN or infinite values in X and clean them
+        if np.isnan(X).any() or np.isinf(X).any():
+            X[np.isnan(X)] = 0.0
+            X[np.isinf(X)] = 0.0
+        
+        n_init = 10
+        print(f'K: {k} - n_init: {n_init}')
+        KM = KMeans(n_clusters=k, n_init=n_init)
+
+        seg_ids = KM.fit_predict(X)
+        
+        bound_beats = 1 + np.flatnonzero(seg_ids[:-1] != seg_ids[1:])
+
+        # Count beat 0 as a boundary
+        bound_beats = librosa.util.fix_frames(bound_beats, x_min=0)
+
+        # Compute the segment label for each boundary
+        bound_segs = list(seg_ids[bound_beats])
+
+        # Convert beat indices to frames
+        bound_frames = beats[bound_beats]
+
+        # Make sure we cover to the end of the track
+        bound_frames = librosa.util.fix_frames(bound_frames, x_min=None, x_max=C.shape[1]-1)
+        
+        #Identify unique labels in the order they first appear
+        unique_labels = []
+        for label in bound_segs:
+            if label not in unique_labels:
+                unique_labels.append(label)
+
+        #Create a mapping from old labels to new labels starting from 1
+        label_mapping = {old_label: new_label for new_label, old_label in enumerate(unique_labels, start=1)}
+
+        #Apply the mapping to bound_segs to generate new_bound_segs
+        new_bound_segs = [label_mapping[label] for label in bound_segs]
+        
+        #Populate the data dictionary    
+        self.data_dict['sr'] = self.sr
+        self.data_dict['chords'] = self.chords
+        self.data_dict['bars'] = self.bars
+        self.data_dict['bound_frames'] = bound_frames
+        self.data_dict['bound_segs'] = new_bound_segs
+        
+        self.saveData(self.data_dict, id_file, path)
+        
+        return self.data_dict
