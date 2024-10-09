@@ -7,11 +7,15 @@ from matplotlib.colors import LinearSegmentedColormap, ListedColormap
 from IPython.display import Audio, display
 
 #--------------------------------------------------------------------------------
-def plotWaveform(y, sr, chords, bars, bound_frames, new_bound_segs, size_x, size_y, colormap_name='viridis'):
-    # Choose a colormap from Matplotlib
-    # You can change this to any colormap name, e.g., 'tab20', 'viridis', 'Blues', etc.
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import matplotlib.ticker as ticker
+import librosa.display
+import numpy as np
 
-    # Generate a list of colors using the chosen colormap
+def plotWaveform(y, sr, chords, bars, bound_frames, new_bound_segs, size_x, size_y, colormap_name='viridis'):
+    # You can change this to any colormap name, e.g., 'tab20', 'viridis', 'Blues', etc.
+    # Choose a colormap from Matplotlib
     colormap = plt.get_cmap(colormap_name)
     num_colors = len(set(new_bound_segs))
     custom_colors = colormap(np.linspace(0, 1, num_colors))
@@ -22,36 +26,60 @@ def plotWaveform(y, sr, chords, bars, bound_frames, new_bound_segs, size_x, size
     sr_downsampled = sr // downsample_factor
 
     # Convert bound frames to times
-    bound_times = librosa.frames_to_time(bound_frames)
+    bound_times = librosa.frames_to_time(bound_frames, sr=sr)
 
     # Plot the waveform
     fig, ax = plt.subplots(figsize=(size_x, size_y))
     librosa.display.waveshow(y_downsampled, sr=sr_downsampled, ax=ax, color='#00AAFF', alpha=0.75)
 
     # Plot section boundaries with custom colors
-    for interval, label in zip(zip(bound_times, bound_times[1:]), new_bound_segs):
+    for interval, label in zip(zip(bound_times, np.append(bound_times[1:], librosa.get_duration(y=y, sr=sr))), new_bound_segs):
         color_idx = label % len(custom_colors)  # Ensure we don't exceed the color map length
-        rect = patches.Rectangle((interval[0], plt.ylim()[0]), interval[1] - interval[0], plt.ylim()[1] - plt.ylim()[0], facecolor=custom_colors[color_idx], alpha=0.4)
+        rect = patches.Rectangle((interval[0], ax.get_ylim()[0]), interval[1] - interval[0], ax.get_ylim()[1] - ax.get_ylim()[0],
+                                 facecolor=custom_colors[color_idx], alpha=0.4)
         ax.add_patch(rect)
         # Add section label text at the midpoint of the section
         midpoint = (interval[0] + interval[1]) / 2
-        plt.text(midpoint, 0, f"Section {label}", rotation=90, verticalalignment='center', fontsize=12, color='black', weight='normal')
+        ax.text(midpoint, 0, f"Section {label}", rotation=90, verticalalignment='center',
+                fontsize=12, color='black', weight='normal')
 
     # Plot chord changes and annotate chords
     for chord in chords[1:-1]:
-        #plt.axvline(x=chord.timestamp, color='r', linestyle='--', linewidth=0.5)
-        plt.text(chord.timestamp, plt.ylim()[1] + 0.05, chord.chord, rotation=90, verticalalignment='bottom', fontsize=10, color='black', weight='normal')
+        # ax.axvline(x=chord.timestamp, color='r', linestyle='--', linewidth=0.5)
+        ax.text(chord.timestamp, ax.get_ylim()[1] + 0.05, chord.chord, rotation=90, verticalalignment='bottom',
+                fontsize=10, color='black', weight='normal')
 
     # Plot vertical lines for each bar
     for bar in bars:
-        plt.axvline(x=bar[0], color='#555555', linestyle='dotted', linewidth=0.5)
-        plt.text(bar[0] + 0.01, plt.ylim()[0], f"Bar {bars.index(bar) + 1}", rotation=90, verticalalignment='bottom', fontsize=10, color='#000')
-        
-    
+        ax.axvline(x=bar[0], color='#555555', linestyle='dotted', linewidth=0.5)
+        ax.text(bar[0] + 0.01, ax.get_ylim()[0], f"Bar {bars.index(bar) + 1}", rotation=90,
+                verticalalignment='bottom', fontsize=10, color='#000')
 
-    plt.xlabel('Time (s)')
-    plt.ylabel('Amplitude')
+    # **Adjust the x-axis ticks to show more time points**
+    # Calculate the duration of the song
+    total_duration = librosa.get_duration(y=y, sr=sr)
+
+    # Decide on the interval between ticks (e.g., every 30 seconds)
+    tick_interval = 5  # Adjust this value as needed
+
+    # Set the locator
+    ax.xaxis.set_major_locator(ticker.MultipleLocator(tick_interval))
+
+    # Optionally, format the ticks to show minutes and seconds
+    def format_time(x, pos=None):
+        minutes = int(x // 60)
+        seconds = int(x % 60)
+        return f'{minutes}:{seconds:02d}'
+
+    ax.xaxis.set_major_formatter(ticker.FuncFormatter(format_time))
+
+    # Set axis labels and title
+    ax.set_xlabel('Time (mm:ss)')
+    ax.set_ylabel('Amplitude')
+    ax.set_title('Waveform with Sections, Chords, and Bars')
+
     plt.show()
+
 
 #--------------------------------------------------------------------------------
 def plotChordsBars(chords, bars, bound_frames, bound_segs, size_x=40, size_y=5):
