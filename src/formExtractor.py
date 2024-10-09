@@ -17,6 +17,9 @@ import scipy
 import matplotlib.pyplot as plt
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import SpectralClustering
+from scipy.ndimage import median_filter
+from sklearn.cluster import AgglomerativeClustering
 
 # Define the ChordChange class
 class ChordChange:
@@ -140,34 +143,24 @@ class formExtractor():
         return Csync, beats, beat_times
     
     #-------------------------------------------------------
-    def laplacian_2(self, y, sr, C, Csync, beats, beat_times, K, plotIt=False, threshold=0.0):
-    
-        # Compute multiple features: chroma, tonnetz, and mfcc
-        chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
-        tonnetz = librosa.feature.tonnetz(y=y, sr=sr)
-        mfcc = librosa.feature.mfcc(y=y, sr=sr)
-        
-        # Synchronize features with beats
-        chroma_sync = librosa.util.sync(chroma, beats, aggregate=np.median)
-        tonnetz_sync = librosa.util.sync(tonnetz, beats, aggregate=np.median)
-        mfcc_sync = librosa.util.sync(mfcc, beats)
-        
-        # Concatenate features
-        Csync = np.vstack([chroma_sync, tonnetz_sync, mfcc_sync])
-        
-        # Build a weighted recurrence matrix using beat-synchronous features
+    def laplacian_2(self, y, sr, C, Csync, beats, beat_times, K, plotIt=False, threshold=0.0, min_duration=5.0):
+        # Let's build a weighted recurrence matrix using beat-synchronous CQT (Equation 1)
+        # width=3 prevents links within the same bar; mode='affinity' implements S_rep (after Eq. 8)
         R = librosa.segment.recurrence_matrix(Csync, width=3, mode='affinity', sym=True)
 
         # Apply a threshold to eliminate weak similarities in R
         print(f'Threshold: {threshold}')
         R[R < threshold] = 0
 
-        # Enhance diagonals with a median filter
+        # Enhance diagonals with a median filter (Equation 2)
         df = librosa.segment.timelag_filter(scipy.ndimage.median_filter)
         Rf = df(R, size=(1, 7))
 
         # Build the sequence matrix using MFCC similarity
-        path_distance = np.sum(np.diff(mfcc_sync, axis=1)**2, axis=0)
+        mfcc = librosa.feature.mfcc(y=y, sr=sr)
+        Msync = librosa.util.sync(mfcc, beats)
+
+        path_distance = np.sum(np.diff(Msync, axis=1)**2, axis=0)
         sigma = np.median(path_distance)
         path_sim = np.exp(-path_distance / sigma)
 
@@ -180,96 +173,146 @@ class formExtractor():
         mu = deg_path.dot(deg_path + deg_rec) / np.sum((deg_path + deg_rec)**2)
 
         A = mu * Rf + (1 - mu) * R_path
-        
+
         # Apply a threshold to eliminate weak similarities in A
         A[A < threshold] = 0
-        
+
         # Plot the resulting graphs (Figure 1, left and center)
         if plotIt:
             fig, ax = plt.subplots(ncols=3, sharex=True, sharey=True, figsize=(12, 4))
-            librosa.display.specshow(Rf, cmap='coolwarm', y_axis='time', x_axis='s', y_coords=beat_times, x_coords=beat_times, ax=ax[0])
+            librosa.display.specshow(Rf, cmap='coolwarm', y_axis='time', x_axis='s',
+                                    y_coords=beat_times, x_coords=beat_times, ax=ax[0])
             ax[0].set(title='Recurrence similarity')
             ax[0].label_outer()
 
-            librosa.display.specshow(R_path, cmap='coolwarm', y_axis='time', x_axis='s', y_coords=beat_times, x_coords=beat_times, ax=ax[1])
+            librosa.display.specshow(R_path, cmap='coolwarm', y_axis='time', x_axis='s',
+                                    y_coords=beat_times, x_coords=beat_times, ax=ax[1])
             ax[1].set(title='Path similarity')
             ax[1].label_outer()
 
-            librosa.display.specshow(A, cmap='coolwarm', y_axis='time', x_axis='s', y_coords=beat_times, x_coords=beat_times, ax=ax[2])
+            librosa.display.specshow(A, cmap='coolwarm', y_axis='time', x_axis='s',
+                                    y_coords=beat_times, x_coords=beat_times, ax=ax[2])
             ax[2].set(title='Combined graph')
             ax[2].label_outer()
-        
-        # Now let’s compute the normalized Laplacian
+            plt.show()
+
+        # Now let's compute the normalized Laplacian (Eq. 10)
         L = scipy.sparse.csgraph.laplacian(A, normed=True)
 
-        # Perform its spectral decomposition
+        # and its spectral decomposition
         evals, evecs = scipy.linalg.eigh(L)
 
-        # Clean further with a median filter to smooth over small discontinuities
+        # We can clean this up further with a median filter.
+        # This can help smooth over small discontinuities
         evecs = scipy.ndimage.median_filter(evecs, size=(9, 1))
 
         # Cumulative normalization is needed for symmetric normalized Laplacian eigenvectors
         Cnorm = np.cumsum(evecs**2, axis=1)**0.5
 
-        # Use the first k normalized eigenvectors
+        # If we want k clusters, use the first k normalized eigenvectors.
         k = K
         X = evecs[:, :k] / Cnorm[:, k-1:k]
 
         # Check for NaN or infinite values in X and clean them
         if np.isnan(X).any() or np.isinf(X).any():
-            X[np.isnan(X)] = 0.0
-            X[np.isinf(X)] = 0.0
-        
-        # Use these k components to cluster beats into segments
+            X = np.nan_to_num(X)
+
+        # Let's use these k components to cluster beats into segments (Algorithm 1)
         KM = KMeans(n_clusters=k, n_init=10)
         seg_ids = KM.fit_predict(X)
 
         if plotIt:
             # Plot the structure components and estimated labels
-            fig, ax = plt.subplots(ncols=2, sharey=True, figsize=(8, 4))
+            fig, ax = plt.subplots(ncols=2, sharey=True, figsize=(10, 4))
             colors = plt.get_cmap('coolwarm', k)
 
             librosa.display.specshow(X, y_axis='time', y_coords=beat_times, ax=ax[0])
             ax[0].set(title='Structure components')
 
-            # Convert lists to numpy arrays
-            x_coords = np.array([0, 1])
-            y_coords = np.array(list(beat_times) + [beat_times[-1]])
-
-            img = librosa.display.specshow(np.atleast_2d(seg_ids).T, cmap=colors, y_axis='time', x_coords=x_coords, y_coords=y_coords, ax=ax[1])
-            ax[1].set(title='Estimated labels')
-
-            ax[1].label_outer()
+            # Prepare the segmentation labels for plotting
+            img = ax[1].imshow(seg_ids[np.newaxis, :], aspect='auto', cmap=colors,
+                            extent=[beat_times[0], beat_times[-1], 0, 1])
+            ax[1].set(title='Estimated labels before merging')
+            ax[1].set_yticks([])
+            ax[1].set_xlabel('Time (s)')
             fig.colorbar(img, ax=[ax[1]], ticks=range(k))
+            plt.show()
 
         # Define the sections
         bound_beats = 1 + np.flatnonzero(seg_ids[:-1] != seg_ids[1:])
 
-        # Count beat 0 as a boundary
-        bound_beats = librosa.util.fix_frames(bound_beats, x_min=0)
+        # Include beat 0 as a boundary
+        bound_beats = np.concatenate(([0], bound_beats))
+
+        # Ensure bound_beats are within valid range
+        bound_beats = librosa.util.fix_frames(bound_beats, x_min=0, x_max=len(beats)-1, pad=False)
 
         # Compute the segment label for each boundary
-        bound_segs = list(seg_ids[bound_beats])
+        bound_segs = seg_ids[bound_beats]
 
         # Convert beat indices to frames
         bound_frames = beats[bound_beats]
 
-        # Make sure we cover to the end of the track
-        bound_frames = librosa.util.fix_frames(bound_frames, x_min=None, x_max=C.shape[1]-1)
+        # Get the total duration of the song
+        total_duration = librosa.get_duration(y=y, sr=sr)
+
+        # Ensure that bound_times includes the end of the song
+        bound_times = librosa.frames_to_time(bound_frames, sr=sr)
+        if bound_times[-1] < total_duration:
+            bound_times = np.append(bound_times, total_duration)
+            bound_frames = np.append(bound_frames, C.shape[1] - 1)
+            bound_segs = np.append(bound_segs, bound_segs[-1])
+
+        # Implement Minimum Duration Threshold
+        new_bound_frames = [bound_frames[0]]
+        new_bound_segs = [bound_segs[0]]
+
+        for i in range(1, len(bound_frames)):
+            # Calculate the duration of the current segment
+            duration = bound_times[i] - bound_times[i - 1]
+            if duration < min_duration:
+                # Merge with the previous segment by not adding a new boundary
+                #print(f"Merging segment {i} (duration {duration:.2f}s) with previous segment.")
+                continue
+            else:
+                # Keep the boundary
+                new_bound_frames.append(bound_frames[i])
+                new_bound_segs.append(bound_segs[i])
 
         # Identify unique labels in the order they first appear
         unique_labels = []
-        for label in bound_segs:
+        for label in new_bound_segs:
             if label not in unique_labels:
                 unique_labels.append(label)
 
         # Create a mapping from old labels to new labels starting from 1
         label_mapping = {old_label: new_label for new_label, old_label in enumerate(unique_labels, start=1)}
 
-        # Apply the mapping to bound_segs to generate new_bound_segs
-        new_bound_segs = [label_mapping[label] for label in bound_segs]
+        # Apply the mapping to new_bound_segs to generate final_bound_segs
+        final_bound_segs = [label_mapping[label] for label in new_bound_segs]
 
-        return bound_frames, new_bound_segs
+        # Plot the final segmentation result
+        if plotIt:
+            fig, ax = plt.subplots(figsize=(12, 2))
+            colors = plt.get_cmap('coolwarm', len(unique_labels) + 1)
+
+            # Create arrays of segment starts and ends
+            segment_starts = librosa.frames_to_time(new_bound_frames, sr=sr)
+            segment_ends = np.append(segment_starts[1:], total_duration)
+
+            # Plot each segment as a horizontal bar
+            for i, (start, end) in enumerate(zip(segment_starts, segment_ends)):
+                ax.broken_barh([(start, end - start)], (0, 1),
+                            facecolors=colors(final_bound_segs[i]), edgecolors='black')
+
+            ax.set_xlim([0, total_duration])
+            ax.set_yticks([])
+            ax.set_xlabel('Time (s)')
+            ax.set_title('Final Segmentation after Merging')
+            plt.show()
+
+        return np.array(new_bound_frames), final_bound_segs
+
 
 
 
