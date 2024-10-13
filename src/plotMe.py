@@ -14,7 +14,6 @@ import librosa.display
 import numpy as np
 
 def plotWaveform(y, sr, chords, bars, bound_frames, new_bound_segs, size_x, size_y, colormap_name='viridis'):
-    # You can change this to any colormap name, e.g., 'tab20', 'viridis', 'Blues', etc.
     # Choose a colormap from Matplotlib
     colormap = plt.get_cmap(colormap_name)
     num_colors = len(set(new_bound_segs))
@@ -33,33 +32,63 @@ def plotWaveform(y, sr, chords, bars, bound_frames, new_bound_segs, size_x, size
     librosa.display.waveshow(y_downsampled, sr=sr_downsampled, ax=ax, color='#00AAFF', alpha=0.75)
 
     # Plot section boundaries with custom colors
-    for interval, label in zip(zip(bound_times, np.append(bound_times[1:], librosa.get_duration(y=y, sr=sr))), new_bound_segs):
+    for interval, label in zip(
+        zip(bound_times, np.append(bound_times[1:], librosa.get_duration(y=y, sr=sr))),
+        new_bound_segs
+    ):
         color_idx = label % len(custom_colors)  # Ensure we don't exceed the color map length
-        rect = patches.Rectangle((interval[0], ax.get_ylim()[0]), interval[1] - interval[0], ax.get_ylim()[1] - ax.get_ylim()[0],
-                                 facecolor=custom_colors[color_idx], alpha=0.4)
+        rect = patches.Rectangle(
+            (interval[0], ax.get_ylim()[0]),
+            interval[1] - interval[0],
+            ax.get_ylim()[1] - ax.get_ylim()[0],
+            facecolor=custom_colors[color_idx], 
+            alpha=0.4
+        )
         ax.add_patch(rect)
         # Add section label text at the midpoint of the section
         midpoint = (interval[0] + interval[1]) / 2
-        ax.text(midpoint, 0, f"Section {label}", rotation=90, verticalalignment='center',
-                fontsize=12, color='black', weight='normal')
+        ax.text(
+            midpoint, 
+            0, 
+            f"Section {label}", 
+            rotation=90, 
+            verticalalignment='center',
+            fontsize=12, 
+            color='black', 
+            weight='normal'
+        )
 
-    # Plot chord changes and annotate chords
-    for chord in chords[1:-1]:
-        # ax.axvline(x=chord.timestamp, color='r', linestyle='--', linewidth=0.5)
-        ax.text(chord.timestamp, ax.get_ylim()[1] + 0.05, chord.chord, rotation=90, verticalalignment='bottom',
-                fontsize=10, color='black', weight='normal')
+    # **Fixed Iteration Over All Chords**
+    for chord in chords:
+        ax.text(
+            chord.timestamp, 
+            ax.get_ylim()[1] + 0.05, 
+            chord.chord, 
+            rotation=90, 
+            verticalalignment='bottom',
+            fontsize=10, 
+            color='black', 
+            weight='normal'
+        )
 
     # Plot vertical lines for each bar
-    for bar in bars:
+    for i, bar in enumerate(bars, start=1):
         ax.axvline(x=bar[0], color='#555555', linestyle='dotted', linewidth=0.5)
-        ax.text(bar[0] + 0.01, ax.get_ylim()[0], f"Bar {bars.index(bar) + 1}", rotation=90,
-                verticalalignment='bottom', fontsize=10, color='#000')
+        ax.text(
+            bar[0] + 0.01, 
+            ax.get_ylim()[0], 
+            f"Bar {i}", 
+            rotation=90,
+            verticalalignment='bottom', 
+            fontsize=10, 
+            color='#000'
+        )
 
-    # **Adjust the x-axis ticks to show more time points**
+    # Adjust the x-axis ticks to show more time points
     # Calculate the duration of the song
     total_duration = librosa.get_duration(y=y, sr=sr)
 
-    # Decide on the interval between ticks (e.g., every 30 seconds)
+    # Decide on the interval between ticks (e.g., every 5 seconds)
     tick_interval = 5  # Adjust this value as needed
 
     # Set the locator
@@ -76,10 +105,9 @@ def plotWaveform(y, sr, chords, bars, bound_frames, new_bound_segs, size_x, size
     # Set axis labels and title
     ax.set_xlabel('Time (mm:ss)')
     ax.set_ylabel('Amplitude')
-    ax.set_title('Waveform with Sections, Chords, and Bars')
+    ax.set_title('')
 
     plt.show()
-
 
 #--------------------------------------------------------------------------------
 def plotChordsBars(chords, bars, bound_frames, bound_segs, size_x=40, size_y=5):
