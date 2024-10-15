@@ -9,18 +9,35 @@ import matplotlib.pyplot as plt
 from collections import namedtuple
 
 class TriadExtractor:
-    def __init__(self, hop_length=512):
+    def __init__(self, hop_length=512, scale=['C', 'D', 'E', 'F', 'G', 'A', 'B']):
         self.hop_length = hop_length
         self.maj_template = np.array([1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0])
         self.min_template = np.array([1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0])
         self.N_template = np.array([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]) / 4.
-        self.labels = [
+        self.labels_sharp = [
             'C', 'C#', 'D', 'D#', 'E', 'F',
             'F#', 'G', 'G#', 'A', 'A#', 'B',
             'Cm', 'C#m', 'Dm', 'D#m', 'Em', 'Fm',
             'F#m', 'Gm', 'G#m', 'Am', 'A#m', 'Bm',
             'N'
         ]
+        self.labels_flat = [
+            'C', 'Db', 'D', 'Eb', 'E', 'F',
+            'Gb', 'G', 'Ab', 'A', 'Bb', 'B',
+            'Cm', 'Dbm', 'Dm', 'Ebm', 'Em', 'Fm',
+            'Gbm', 'Gm', 'Abm', 'Am', 'Bbm', 'Bm',
+            'N'
+        ]
+        self.labels = self.labels_sharp
+        # Check from the scale is it uses sharp or flat notes
+        for note in scale:
+            if note in self.labels_sharp:
+                self.labels = self.labels_sharp
+                break
+            elif note in self.labels_flat:
+                self.labels = self.labels_flat
+                break
+                
         self.weights = self._generate_weights()
         self.trans = librosa.sequence.transition_loop(25, 0.99)
 
@@ -32,29 +49,38 @@ class TriadExtractor:
         weights[-1] = self.N_template  # the last row is the no-chord class
         return weights
 
-    def extract_chords(self, song_path, window_range=8, threshold=0.3, check_on_beat=False):
+    def extract_chords(self, song_path, window_duration=0.5, threshold=0.3, check_on_beat=False):
         y, sr = librosa.load(song_path)
         # Suppress percussive elements
         y = librosa.effects.harmonic(y, margin=1)  # Increased margin for better harmonic separation
         chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=self.hop_length, n_chroma=12)
+        chroma = librosa.util.normalize(chroma, norm=1, axis=0)  # L2-normalization
         
         bars = self.getBars(song_path)
         chord_progression = []
         previous_chord = None
         
         if check_on_beat:
-            # Analyze chroma features at each beat position
+            # Prepare chord templates for matching
+            chord_templates = self.weights[:-1]  # Exclude the 'N' chord template
+            
             for bar in bars:
-                # use beat 1 and beat 3 as the reference beats
+                # Use beat 1 and beat 3 as the reference beats
                 for beat in [bar[0], bar[2]]:
                     frame_index = librosa.time_to_frames(beat, sr=sr, hop_length=self.hop_length)
-                    chroma_window = chroma[:, max(0, frame_index): min(chroma.shape[1], frame_index + window_range)]
-                    # Map chroma (observations) to class (state) likelihoods
-                    probs = np.exp(self.weights.dot(chroma_window))  # P[class | chroma] ~= exp(template' chroma)
-                    probs /= probs.sum(axis=0, keepdims=True)  # probabilities must sum to 1 in each column
-                    # And viterbi estimates
-                    chords_vit = librosa.sequence.viterbi_discriminative(probs, self.trans)
-                    beat_chord = self.labels[chords_vit[0]]  # Get the chord for the current beat
+                    # Define the window frames based on window_duration
+                    window_frames = int(window_duration * sr / self.hop_length)
+                    chroma_window = chroma[:, frame_index: frame_index + window_frames]
+                    # Check if chroma_window is not empty
+                    if chroma_window.shape[1] == 0:
+                        continue
+                    # Compute the average chroma vector over the window
+                    avg_chroma = np.mean(chroma_window, axis=1)
+                    # Compute the correlation with each chord template
+                    correlations = chord_templates.dot(avg_chroma)
+                    # Select the chord with the highest correlation
+                    chord_index = np.argmax(correlations)
+                    beat_chord = self.labels[chord_index]
                     if beat_chord != previous_chord:
                         chord_progression.append((beat_chord, beat))
                     previous_chord = beat_chord
@@ -75,8 +101,7 @@ class TriadExtractor:
             chord_progression = filtered_cp
         
         # Check for 7th chords
-        updated_cp = self._check_for_sevenths(chroma, chord_progression, sr, window_range, threshold)
-        
+        updated_cp = self._check_for_sevenths(chroma, chord_progression, sr, int(window_duration * sr / self.hop_length), threshold)
         ChordChange = namedtuple('ChordChange', ['chord', 'timestamp'])
         chordProgression = [ChordChange(chord=chord, timestamp=timestamp) for chord, timestamp in updated_cp]
         return chordProgression
