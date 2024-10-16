@@ -1,11 +1,5 @@
-# This script extracts the chord progression of a song using the Viterbi algorithm and checks for 7th chords.
 import librosa
-import librosa.display
 import numpy as np
-import importlib
-import formExtractor as fem
-importlib.reload(fem)
-import matplotlib.pyplot as plt
 from collections import namedtuple
 
 class TriadExtractor:
@@ -13,163 +7,183 @@ class TriadExtractor:
         self.hop_length = hop_length
         self.maj_template = np.array([1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0])
         self.min_template = np.array([1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0])
-        self.N_template = np.array([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]) / 4.
+        self.N_template = np.full(12, 1/4)
         self.labels_sharp = [
-            'C', 'C#', 'D', 'D#', 'E', 'F',
-            'F#', 'G', 'G#', 'A', 'A#', 'B',
-            'Cm', 'C#m', 'Dm', 'D#m', 'Em', 'Fm',
-            'F#m', 'Gm', 'G#m', 'Am', 'A#m', 'Bm',
-            'N'
+            'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B',
+            'Cm', 'C#m', 'Dm', 'D#m', 'Em', 'Fm', 'F#m', 'Gm', 'G#m', 'Am', 'A#m', 'Bm', 'N'
         ]
         self.labels_flat = [
-            'C', 'Db', 'D', 'Eb', 'E', 'F',
-            'Gb', 'G', 'Ab', 'A', 'Bb', 'B',
-            'Cm', 'Dbm', 'Dm', 'Ebm', 'Em', 'Fm',
-            'Gbm', 'Gm', 'Abm', 'Am', 'Bbm', 'Bm',
-            'N'
+            'C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B',
+            'Cm', 'Dbm', 'Dm', 'Ebm', 'Em', 'Fm', 'Gbm', 'Gm', 'Abm', 'Am', 'Bbm', 'Bm', 'N'
         ]
-        self.labels = self.labels_sharp
-        # Check from the scale is it uses sharp or flat notes
-        for note in scale:
-            if note in self.labels_sharp:
-                self.labels = self.labels_sharp
-                break
-            elif note in self.labels_flat:
-                self.labels = self.labels_flat
-                break
-                
+        self.labels = self.labels_sharp if any(note in self.labels_sharp for note in scale) else self.labels_flat
         self.weights = self._generate_weights()
         self.trans = librosa.sequence.transition_loop(25, 0.99)
 
     def _generate_weights(self):
-        weights = np.zeros((25, 12), dtype=float)
+        weights = np.zeros((25, 12))
         for c in range(12):
-            weights[c, :] = np.roll(self.maj_template, c)  # c:maj
-            weights[c + 12, :] = np.roll(self.min_template, c)  # c:min
-        weights[-1] = self.N_template  # the last row is the no-chord class
+            weights[c] = np.roll(self.maj_template, c)
+            weights[c + 12] = np.roll(self.min_template, c)
+        weights[-1] = self.N_template
         return weights
 
-    def extract_chords(self, song_path, window_duration=0.5, threshold=0.3, check_on_beat=False):
+    def extract_chords(self, song_path, threshold=0.3, check_on_beat=False):
         y, sr = librosa.load(song_path)
-        # Suppress percussive elements
-        y = librosa.effects.harmonic(y, margin=1)  # Increased margin for better harmonic separation
-        chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=self.hop_length, n_chroma=12)
-        chroma = librosa.util.normalize(chroma, norm=1, axis=0)  # L2-normalization
-        
-        bars = self.getBars(song_path)
+        y = librosa.effects.harmonic(y, margin=1)
+        chroma = librosa.feature.chroma_cqt(
+            y=y, sr=sr, hop_length=self.hop_length, n_chroma=12
+        )
+        chroma = librosa.util.normalize(chroma, norm=1, axis=0)
+
+        # Compute the onset envelope once
+        onset_env = librosa.onset.onset_strength(
+            y=y, sr=sr, hop_length=self.hop_length
+        )
+
+        if check_on_beat:
+            beats = self.get_beats(onset_env, sr)
+            # Calculate average beat duration for the last beat estimation
+            if len(beats) > 1:
+                avg_beat_duration = np.mean(np.diff(beats))
+            else:
+                tempo = librosa.beat.tempo(
+                    onset_envelope=onset_env, sr=sr, hop_length=self.hop_length
+                )
+                if tempo.size > 0 and tempo[0] > 0:
+                    avg_beat_duration = 60.0 / tempo[0]
+                else:
+                    avg_beat_duration = 0.5  # Fallback value
+            chord_progression = self.extract_chords_on_beat(
+                chroma, sr, beats, avg_beat_duration
+            )
+        else:
+            chord_progression = self.extract_chords_viterbi(chroma, sr)
+            avg_beat_duration = 0.5  # Default value when not checking on beats
+
+        # Use average beat duration for seventh chord analysis
+        window_range = int((avg_beat_duration * sr) / self.hop_length)
+        updated_cp = self._check_for_sevenths(
+            chroma, chord_progression, sr, window_range, threshold
+        )
+        ChordChange = namedtuple('ChordChange', ['chord', 'timestamp'])
+        return [
+            ChordChange(chord=chord, timestamp=timestamp)
+            for chord, timestamp in updated_cp
+        ]
+
+    def extract_chords_on_beat(self, chroma, sr, beats, avg_beat_duration):
         chord_progression = []
         previous_chord = None
-        
-        if check_on_beat:
-            # Prepare chord templates for matching
-            chord_templates = self.weights[:-1]  # Exclude the 'N' chord template
+
+        for i in range(0, len(beats), 1):
+            start_time = beats[i]
+            if i + 1 < len(beats):
+                end_time = beats[i + 1]
+            else:
+                # Estimate end time for the last beat using average beat duration
+                end_time = beats[i] + avg_beat_duration
+            frame_start = librosa.time_to_frames(
+                start_time, sr=sr, hop_length=self.hop_length
+            )
+            frame_end = librosa.time_to_frames(
+                end_time, sr=sr, hop_length=self.hop_length
+            )
+            frame_end = min(frame_end, chroma.shape[1])  # Ensure we don't exceed chroma length
+
+            chroma_window = chroma[:, frame_start:frame_end]
+            if chroma_window.size == 0:
+                continue
+            # print the frame_start and the frame_end
+            #print(f"Frame Start: {frame_start}, Frame End: {frame_end}")
             
-            for bar in bars:
-                # Use beat 1 and beat 3 as the reference beats
-                for beat in [bar[0], bar[2]]:
-                    frame_index = librosa.time_to_frames(beat, sr=sr, hop_length=self.hop_length)
-                    # Define the window frames based on window_duration
-                    window_frames = int(window_duration * sr / self.hop_length)
-                    chroma_window = chroma[:, frame_index: frame_index + window_frames]
-                    # Check if chroma_window is not empty
-                    if chroma_window.shape[1] == 0:
-                        continue
-                    # Compute the average chroma vector over the window
-                    avg_chroma = np.mean(chroma_window, axis=1)
-                    # Compute the correlation with each chord template
-                    correlations = chord_templates.dot(avg_chroma)
-                    # Select the chord with the highest correlation
-                    chord_index = np.argmax(correlations)
-                    beat_chord = self.labels[chord_index]
-                    if beat_chord != previous_chord:
-                        chord_progression.append((beat_chord, beat))
-                    previous_chord = beat_chord
-        else:
-            # Map chroma (observations) to class (state) likelihoods
-            probs = np.exp(self.weights.dot(chroma))  # P[class | chroma] ~= exp(template' chroma)
-            probs /= probs.sum(axis=0, keepdims=True)  # probabilities must sum to 1 in each column
-            # And viterbi estimates
+            # Compute emission probabilities for this window
+            probs = np.exp(self.weights.dot(chroma_window))
+            probs /= probs.sum(axis=0, keepdims=True)
+
+            # Apply Viterbi algorithm to this window
             chords_vit = librosa.sequence.viterbi_discriminative(probs, self.trans)
-            frames = np.arange(len(chords_vit))
-            times = librosa.frames_to_time(frames, sr=sr, hop_length=self.hop_length)
-            chord_progression = list(zip([self.labels[chord] for chord in chords_vit], times))
-            # Filter chord progression to avoid consecutive duplicates
-            filtered_cp = []
-            for i, (chord, timestamp) in enumerate(chord_progression):
-                if i == 0 or chord != chord_progression[i - 1][0]:
-                    filtered_cp.append((chord, float(timestamp)))
-            chord_progression = filtered_cp
-        
-        # Check for 7th chords
-        updated_cp = self._check_for_sevenths(chroma, chord_progression, sr, int(window_duration * sr / self.hop_length), threshold)
-        ChordChange = namedtuple('ChordChange', ['chord', 'timestamp'])
-        chordProgression = [ChordChange(chord=chord, timestamp=timestamp) for chord, timestamp in updated_cp]
-        return chordProgression
+    
+            # Determine the most likely chord in this window
+            chord_counts = np.bincount(chords_vit, minlength=len(self.labels))
+            chord_index = np.argmax(chord_counts)
+            beat_chord = self.labels[chord_index]
+
+            if beat_chord != previous_chord:
+                chord_progression.append((beat_chord, start_time))
+
+            previous_chord = beat_chord
+
+        return chord_progression
+
+    def extract_chords_viterbi(self, chroma, sr):
+        # Apply Viterbi algorithm to the entire song
+        probs = np.exp(self.weights.dot(chroma))
+        probs /= probs.sum(axis=0, keepdims=True)
+        chords_vit = librosa.sequence.viterbi_discriminative(probs, self.trans)
+        times = librosa.frames_to_time(
+            np.arange(len(chords_vit)), sr=sr, hop_length=self.hop_length
+        )
+        chord_progression = [
+            (self.labels[chord], float(time)) for chord, time in zip(chords_vit, times)
+        ]
+        # Remove consecutive duplicates
+        return [
+            x for i, x in enumerate(chord_progression)
+            if i == 0 or x[0] != chord_progression[i - 1][0]
+        ]
 
     def _check_for_sevenths(self, chroma, chord_progression, sr, window_range, threshold):
         updated_cp = []
         for chord, timestamp in chord_progression:
-            new_chord = chord
-            if 'N' not in chord:  # Only process valid chords
+            if 'N' not in chord:
                 chord_root = chord.rstrip('7').rstrip('m')
-                if 'm' in chord:
-                    root_index = self.labels.index(chord_root + 'm') - 12
-                else:
-                    root_index = self.labels.index(chord_root)
+                is_minor = 'm' in chord and 'maj' not in chord
+                root_index = self.labels.index(chord_root) % 12
+                seventh_index = (root_index + 10) % 12
+                major_seventh_index = (root_index + 11) % 12
 
-                seventh_index = (root_index + 10) % 12  # Minor or dominant seventh
-                major_seventh_index = (root_index + 11) % 12  # Major seventh
-
-                # Extract a small time window around the timestamp
-                frame_index = librosa.time_to_frames(timestamp, sr=sr, hop_length=self.hop_length)
-                chroma_window = chroma[:, max(0, frame_index - window_range): min(chroma.shape[1], frame_index + window_range)]
-                # Average the chroma values in the time window
+                frame_index = librosa.time_to_frames(
+                    timestamp, sr=sr, hop_length=self.hop_length
+                )
+                frame_start = max(0, frame_index - window_range // 2)
+                frame_end = min(chroma.shape[1], frame_index + window_range // 2)
+                chroma_window = chroma[:, frame_start:frame_end]
                 avg_chroma = np.mean(chroma_window, axis=1)
 
-                # Determine if the seventh is present
-                if avg_chroma[seventh_index] > threshold:  # Threshold for detecting the 7th
-                    if 'm' in chord:  # Minor chord
-                        new_chord = chord + '7'  # Minor seventh (e.g., Bm7)
-                    elif avg_chroma[major_seventh_index] > threshold:  # Major seventh
-                        new_chord = chord + 'maj7'  # Major seventh (e.g., Gmaj7)
-                    else:  # Dominant seventh
-                        new_chord = chord + '7'  # Dominant seventh (e.g., B7)
-                # Check for diminished and half-diminished sevenths
-                if 'dim' in chord:
-                    if avg_chroma[seventh_index] > threshold:
-                        new_chord = chord + '⦰7'  # Half-diminished seventh (e.g., A⦰7)
+                if avg_chroma[seventh_index] > threshold:
+                    if is_minor:
+                        chord += '7'
+                    elif avg_chroma[major_seventh_index] > threshold:
+                        chord += 'maj7'
                     else:
-                        new_chord = chord + 'dim7'  # Diminished seventh (e.g., Ddim7)
-            updated_cp.append((new_chord, timestamp))
+                        chord += '7'
+                elif 'dim' in chord:
+                    chord += '⦰7' if avg_chroma[seventh_index] > threshold else 'dim7'
+            updated_cp.append((chord, timestamp))
         return updated_cp
 
-    # Extract the bars
-    def getBars(self, audio_path):
-        pre_range = 0.1 
-        # Load the audio file
-        y, sr = librosa.load(audio_path)
-        # Extract the tempo and beat frames
-        tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
-        # Convert the beat frames to time
-        beat_times = librosa.frames_to_time(beats, sr=sr)
-        # Extract the bars
-        # Calculate bar positions (assuming 4 beats per bar)
-        bars = []
-        bar_duration = 4 * 60 / tempo  # duration of one bar in seconds
+    def get_beats(self, onset_env, sr):
+        # Detect beat frames
+        tempo, beats = librosa.beat.beat_track(
+            onset_envelope=onset_env, sr=sr, hop_length=self.hop_length
+        )
+        # Convert frames to times
+        beat_times = librosa.frames_to_time(beats, sr=sr, hop_length=self.hop_length)
 
-        # Iterate over beat_times and group into bars
-        current_bar = []
-        for beat_time in beat_times:
-            current_bar.append(beat_time - pre_range)
-            if len(current_bar) == 4:
-                bars.append(current_bar)
-                current_bar = []
-        
-        return bars
+        # If the first beat is significantly after 0.0, insert a beat at 0.0
+        if beat_times.size == 0 or beat_times[0] > 0.1:
+            beat_times = np.insert(beat_times, 0, 0.0)
 
-# Example usage
+        return beat_times
+
 if __name__ == "__main__":
-    song_path = "path/to/your/song.mp3"  # Replace with the actual path to your song
+    song_path = "path/to/your/song.mp3"
     extractor = TriadExtractor(hop_length=256)
-    chord_changes = extractor.extract_chords(song_path, window_range=3, threshold=0.5, check_on_beat=True)
-    print(chord_changes)
+    chord_changes = extractor.extract_chords(
+        song_path,
+        threshold=0.5,
+        check_on_beat=True
+    )
+    for chord_change in chord_changes:
+        print(f"Chord: {chord_change.chord}, Timestamp: {chord_change.timestamp:.2f}")
