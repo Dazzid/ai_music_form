@@ -54,9 +54,7 @@ class TriadExtractor:
                     avg_beat_duration = 60.0 / tempo[0]
                 else:
                     avg_beat_duration = 0.5  # Fallback value
-            chord_progression = self.extract_chords_on_beat(
-                chroma, sr, beats, avg_beat_duration
-            )
+            chord_progression = self.extract_chords_on_beat(chroma, sr, beats)
         else:
             chord_progression = self.extract_chords_viterbi(chroma, sr)
             avg_beat_duration = 0.5  # Default value when not checking on beats
@@ -72,39 +70,28 @@ class TriadExtractor:
             for chord, timestamp in updated_cp
         ]
 
-    def extract_chords_on_beat(self, chroma, sr, beats, avg_beat_duration):
+    def extract_chords_on_beat(self, chroma, sr, beats):
         chord_progression = []
         previous_chord = None
 
-        for i in range(0, len(beats), 1):
+        for i in range(len(beats) - 1):
             start_time = beats[i]
-            if i + 1 < len(beats):
-                end_time = beats[i + 1]
-            else:
-                # Estimate end time for the last beat using average beat duration
-                end_time = beats[i] + avg_beat_duration
-            frame_start = librosa.time_to_frames(
-                start_time, sr=sr, hop_length=self.hop_length
-            )
-            frame_end = librosa.time_to_frames(
-                end_time, sr=sr, hop_length=self.hop_length
-            )
-            frame_end = min(frame_end, chroma.shape[1])  # Ensure we don't exceed chroma length
+            end_time = beats[i + 1]
+            frame_start = librosa.time_to_frames(start_time, sr=sr, hop_length=self.hop_length)
+            frame_end = librosa.time_to_frames(end_time, sr=sr, hop_length=self.hop_length)
 
             chroma_window = chroma[:, frame_start:frame_end]
             if chroma_window.size == 0:
                 continue
-            # print the frame_start and the frame_end
-            #print(f"Frame Start: {frame_start}, Frame End: {frame_end}")
-            
-            # Compute emission probabilities for this window
+
+            # Compute emission probabilities
             probs = np.exp(self.weights.dot(chroma_window))
             probs /= probs.sum(axis=0, keepdims=True)
 
-            # Apply Viterbi algorithm to this window
+            # Apply Viterbi algorithm to the beat window
             chords_vit = librosa.sequence.viterbi_discriminative(probs, self.trans)
-    
-            # Determine the most likely chord in this window
+
+            # Determine the chord for the beat (most frequent chord)
             chord_counts = np.bincount(chords_vit, minlength=len(self.labels))
             chord_index = np.argmax(chord_counts)
             beat_chord = self.labels[chord_index]
@@ -113,6 +100,7 @@ class TriadExtractor:
                 chord_progression.append((beat_chord, start_time))
 
             previous_chord = beat_chord
+
 
         return chord_progression
 
