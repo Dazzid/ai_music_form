@@ -7,3 +7,5 @@ src/__pycache__/*
 # suno/
 # udio/
 # lastfm/
+
+assets/
