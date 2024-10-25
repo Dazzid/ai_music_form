@@ -14,8 +14,8 @@ from IPython.display import Audio
 DEVICE = torch.device('cpu')
 SONG_PATH = "../src/test_audio/Djavan - Azul (Ao Vivo).wav"
 OUTPUT_DIR = "./assets"  # Directory where output files will be saved
-SEGMENT_START_SEC = 0  # in seconds
-SEGMENT_END_SEC = 10  # reduced segment size to 10 seconds for better memory management
+SEGMENT_START_SEC = 10  # in seconds
+SEGMENT_END_SEC = 30  # reduced segment size to 10 seconds for better memory management
 SEGMENT_DURATION = SEGMENT_END_SEC - SEGMENT_START_SEC
 SEGMENT_OVERLAP = 2  # reduced overlap to reduce memory load
 
