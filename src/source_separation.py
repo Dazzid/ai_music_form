@@ -14,8 +14,8 @@ from IPython.display import Audio
 DEVICE = torch.device('cpu')
 SONG_PATH = "../src/test_audio/Djavan - Azul (Ao Vivo).wav"
 OUTPUT_DIR = "./assets"  # Directory where output files will be saved
-SEGMENT_START_SEC = 10  # in seconds
-SEGMENT_END_SEC = 30  # reduced segment size to 10 seconds for better memory management
+SEGMENT_START_SEC = 50  # in seconds
+SEGMENT_END_SEC = 100  # reduced segment size to 10 seconds for better memory management
 SEGMENT_DURATION = SEGMENT_END_SEC - SEGMENT_START_SEC
 SEGMENT_OVERLAP = 2  # reduced overlap to reduce memory load
 
@@ -119,15 +119,15 @@ def run_source_separation():
     # Step 5: Store separated sources into a dictionary
     print("Storing separated sources into a dictionary...")
     # Manually define the output source labels
-    sources_list = ["drums", "bass", "vocals", "other"]
+    sources_list = ["drums", "bass", "other", "vocals"]
     separated_sources = dict(zip(sources_list, sources))
 
     # Step 6: Extract the required segment from each separated source
     print("Extracting segments...")
     drums_segment = extract_segment(separated_sources["drums"], sample_rate, SEGMENT_START_SEC, SEGMENT_END_SEC)
     bass_segment = extract_segment(separated_sources["bass"], sample_rate, SEGMENT_START_SEC, SEGMENT_END_SEC)
-    vocals_segment = extract_segment(separated_sources["vocals"], sample_rate, SEGMENT_START_SEC, SEGMENT_END_SEC)
     other_segment = extract_segment(separated_sources["other"], sample_rate, SEGMENT_START_SEC, SEGMENT_END_SEC)
+    vocals_segment = extract_segment(separated_sources["vocals"], sample_rate, SEGMENT_START_SEC, SEGMENT_END_SEC)
 
     # Step 7: Analyze and Output results
     print("Analyzing and outputting results...")
@@ -138,12 +138,13 @@ def run_source_separation():
 
     bass = extract_segment(waveform, sample_rate, SEGMENT_START_SEC, SEGMENT_END_SEC)
     output_results(bass, bass_segment, "bass", sample_rate)
+    
+    other = extract_segment(waveform, sample_rate, SEGMENT_START_SEC, SEGMENT_END_SEC)
+    output_results(other, other_segment, "other", sample_rate)
 
     vocals = extract_segment(waveform, sample_rate, SEGMENT_START_SEC, SEGMENT_END_SEC)
     output_results(vocals, vocals_segment, "vocals", sample_rate)
-
-    other = extract_segment(waveform, sample_rate, SEGMENT_START_SEC, SEGMENT_END_SEC)
-    output_results(other, other_segment, "other", sample_rate)
+    
 
 # Run the workflow
 if __name__ == "__main__":
