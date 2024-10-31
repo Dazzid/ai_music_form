@@ -9,20 +9,42 @@ from torch import amp  # Import for autocast
 import matplotlib.pyplot as plt
 from IPython.display import Audio
 import time  # Import for timing
+import glob
 
 # Configuration Constants
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-SONG_PATH = "../src/test_audio/Djavan - Azul (Ao Vivo).wav"  # Update this path to your song
-OUTPUT_DIR = "./assets"  # Directory where output files will be saved
 SEGMENT_DURATION = 30  # Duration of each segment in seconds
 SEGMENT_OVERLAP = 5    # Overlap between segments in seconds
 BATCH_SIZE = 2         # Number of segments to process in parallel
 
-# Ensure the output directory exists
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# Initialize variables
+song_path = None
+output_dir = None
+song_id = None  # Variable to store the song ID
+collection = None  # Variable to store the collection name
+
+def setup(song_path_, collection_):
+    global song_path, output_dir, song_id, collection
+    # Configuration Constants
+    song_path = song_path_
+    collection = collection_
+
+    # Extract song ID from the song path
+    song_filename = os.path.basename(song_path)
+    song_id, _ = os.path.splitext(song_filename)
+
+    # Construct the output directory path
+    base_dir = os.path.dirname(os.path.dirname(song_path))  # Get the path up to the collection directory
+    output_dir = os.path.join(base_dir, 'segmented', song_id)
+
+    # Create the output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+
+    print(f"Song path set to: {song_path}")
+    print(f"Output directory set to: {output_dir}")
 
 # Utility Functions
-def load_audio(filepath: str):
+def load_audio(filepath):
     waveform, sample_rate = torchaudio.load(filepath)
     return waveform, sample_rate
 
@@ -45,8 +67,11 @@ def separate_sources_in_batches(model, waveform, sample_rate, segment_size=30, o
     overlap_length = int(overlap * sample_rate)
     hop_length = segment_length - overlap_length
 
-    num_sources = len(model.module.sources) if isinstance(model, torch.nn.DataParallel) else len(model.sources)
-    sources_list = model.module.sources if isinstance(model, torch.nn.DataParallel) else model.sources
+    # Determine the number of sources
+    if isinstance(model, torch.nn.DataParallel):
+        num_sources = len(model.module.sources)
+    else:
+        num_sources = len(model.sources)
 
     # Initialize final output tensors for each source
     separated_sources = torch.zeros((num_sources, waveform.shape[0], total_samples), device='cpu')
@@ -61,7 +86,7 @@ def separate_sources_in_batches(model, waveform, sample_rate, segment_size=30, o
     window = window.unsqueeze(0).unsqueeze(0)  # Shape: [1, 1, segment_length]
 
     positions = []
-    batch_segments = []  # Initialize batch_segments here
+    batch_segments = []
 
     for start in range(0, total_samples, hop_length):
         end = min(start + segment_length, total_samples)
@@ -74,19 +99,13 @@ def separate_sources_in_batches(model, waveform, sample_rate, segment_size=30, o
 
         positions.append((start, end))
         batch_segments.append(segment_waveform)
-        print(f"Preparing segment from {start/sample_rate:.2f}s to {end/sample_rate:.2f}s")
 
         # If we've collected enough segments for a batch, process them
         if len(batch_segments) == batch_size:
             batch_waveforms = torch.stack(batch_segments).to(device)
-            print(f"Processing a batch of {batch_size} segments on device: {batch_waveforms.device}")
 
             with torch.no_grad(), amp.autocast("cuda"):
                 outputs = model(batch_waveforms)
-
-            # If using DataParallel, outputs will be a list
-            if isinstance(outputs, list):
-                outputs = torch.cat(outputs, dim=0)
 
             batch_sources = outputs  # Shape: (batch_size, sources, channels, samples)
 
@@ -105,8 +124,6 @@ def separate_sources_in_batches(model, waveform, sample_rate, segment_size=30, o
                 for s in range(num_sources):
                     separated_sources[s, :, positions[i][0]:positions[i][1]] += source[s]
 
-                print(f"Added separated source from segment {i+1} in batch")
-
             # Clear batch_segments and positions for the next batch
             batch_segments = []
             positions = []
@@ -117,14 +134,9 @@ def separate_sources_in_batches(model, waveform, sample_rate, segment_size=30, o
     # Process any remaining segments that didn't form a complete batch
     if batch_segments:
         batch_waveforms = torch.stack(batch_segments).to(device)
-        print(f"Processing a final batch of {len(batch_segments)} segments on device: {batch_waveforms.device}")
 
         with torch.no_grad(), amp.autocast("cuda"):
             outputs = model(batch_waveforms)
-
-        # If using DataParallel, outputs will be a list
-        if isinstance(outputs, list):
-            outputs = torch.cat(outputs, dim=0)
 
         batch_sources = outputs  # Shape: (batch_size, sources, channels, samples)
 
@@ -143,8 +155,6 @@ def separate_sources_in_batches(model, waveform, sample_rate, segment_size=30, o
             for s in range(num_sources):
                 separated_sources[s, :, positions[i][0]:positions[i][1]] += source[s]
 
-            print(f"Added separated source from final segment {i+1}")
-
         del batch_waveforms, batch_sources, outputs
         torch.cuda.empty_cache()
         gc.collect()
@@ -153,10 +163,21 @@ def separate_sources_in_batches(model, waveform, sample_rate, segment_size=30, o
 
 def output_results(predicted_source: torch.Tensor, source_name: str, sample_rate: int):
     # Print the shape of the predicted_source for debugging
-    print(f"Shape of predicted_source for {source_name}: {predicted_source.shape}")
+    #print(f"Shape of predicted_source for {source_name}: {predicted_source.shape}")
+
+    # Map the source name to the desired filename
+    source_filename_map = {
+        'bass': 'bass.wav',
+        'drums': 'drums.wav',
+        'other': 'other.wav',
+        'vocals': 'vocals.wav'
+    }
+
+    # Get the filename for the current source
+    output_filename = source_filename_map.get(source_name, f"{source_name}.wav")
 
     # Save the predicted audio to a file
-    output_path = os.path.join(OUTPUT_DIR, f"{source_name}_full_song.wav")
+    output_path = os.path.join(output_dir, output_filename)
 
     # Ensure predicted_source is 2D (channels, samples)
     if predicted_source.ndim == 1:
@@ -167,40 +188,41 @@ def output_results(predicted_source: torch.Tensor, source_name: str, sample_rate
     print(f"Saved {source_name} to {output_path}")
 
     # Return the predicted audio for listening in Jupyter Notebook (optional)
-    return Audio(predicted_source.cpu().numpy(), rate=sample_rate)
+    # Remove the return statement if not using Jupyter Notebook
+    # return Audio(predicted_source.cpu().numpy(), rate=sample_rate)
 
 # Main Workflow
-def run_source_separation():
+def run_source_separation(verbose=False):
     start_time = time.perf_counter()  # Start timing
-    # Available device 
-    print("Device: ", DEVICE)
+    # Available device
+    if verbose: print("Device: ", DEVICE)
 
     # Step 1: Load the audio data
-    print("Loading audio...")
-    waveform, sample_rate = load_audio(SONG_PATH)
+    if verbose: print("Loading audio...")
+    waveform, sample_rate = load_audio(song_path)
     total_duration = waveform.shape[-1] / sample_rate
-    print(f"Total duration: {total_duration:.2f} seconds")
+    if verbose:print(f"Total duration: {total_duration:.2f} seconds")
 
     # Step 2: Normalize the waveform
-    print("Normalizing audio...")
+    if verbose:print("Normalizing audio...")
     normalized_waveform, ref = normalize_waveform(waveform)
 
     # Step 3: Load the pre-trained Demucs model using the bundle
-    print("Loading pre-trained model...")
+    if verbose: print("Loading pre-trained model...")
     bundle = HDEMUCS_HIGH_MUSDB_PLUS
     model = bundle.get_model().to(DEVICE)
 
     # Wrap the model with DataParallel to utilize multiple GPUs
     if torch.cuda.device_count() > 1:
-        print(f"Using {torch.cuda.device_count()} GPUs")
+        if verbose:print(f"Using {torch.cuda.device_count()} GPUs")
         model = torch.nn.DataParallel(model)
-    else:
+    elif verbose:
         print("Using a single GPU or CPU")
 
     model.eval()
 
     # Step 4: Separate the sources using the pre-trained model in batches
-    print("Separating sources in batches...")
+    #print("Separating sources in batches...")
     separated_sources = separate_sources_in_batches(
         model,
         normalized_waveform,
@@ -213,30 +235,30 @@ def run_source_separation():
     separated_sources = denormalize_waveform(separated_sources, ref)
 
     # Debugging: Print the shape of separated_sources
-    print(f"Separated sources shape: {separated_sources.shape}")  # Should be [sources, channels, total_samples]
+    #print(f"Separated sources shape: {separated_sources.shape}")  # Should be [sources, channels, total_samples]
 
     # Step 5: Store separated sources into a dictionary
-    print("Storing separated sources into a dictionary...")
+    #print("Storing separated sources into a dictionary...")
     if isinstance(model, torch.nn.DataParallel):
         sources_list = model.module.sources
     else:
         sources_list = model.sources
 
-    print(f"Sources extracted by the model: {sources_list}")
+    #print(f"Sources extracted by the model: {sources_list}")
 
     if len(sources_list) != separated_sources.shape[0]:
         print(f"Error: Number of sources_list ({len(sources_list)}) does not match number of separated_sources ({separated_sources.shape[0]}).")
         return  # Exit the function or handle the error appropriately
 
     separated_sources_dict = dict(zip(sources_list, separated_sources))
-    print(f"Separated sources keys: {list(separated_sources_dict.keys())}")
+    #print(f"Separated sources keys: {list(separated_sources_dict.keys())}")
 
     # Step 6: Analyze and Output results
     print("Analyzing and outputting results...")
 
     # Iterate through each source and process
     for source_name in sources_list:
-        print(f"\nProcessing source: {source_name}")
+        #print(f"\nProcessing source: {source_name}")
 
         separated_source = separated_sources_dict[source_name]
 
@@ -250,8 +272,19 @@ def run_source_separation():
 
 # Run the workflow with timing
 if __name__ == "__main__":
-    start_time = time.perf_counter()  # Start timing
-    run_source_separation()
-    end_time = time.perf_counter()    # End timing
-    elapsed_time = end_time - start_time
-    print(f"\nTotal time taken: {elapsed_time:.2f} seconds")
+    # Example usage
+    # Replace '/home/your_username/samples' with the actual path to your samples directory
+    base_path = '/path/to/your/samples'  # Update this path
+
+    # List of collections
+    collections = ['lastfm_samples', 'udio_samples', 'suno_samples']
+
+    for collection in collections:
+        audio_dir = os.path.join(base_path, collection, 'audio')
+        audio_files = glob.glob(os.path.join(audio_dir, '*.mp3'))  # Adjust extension if needed
+
+        for file in audio_files:
+            print(f"\nProcessing file: {file}")
+            setup(file, collection)
+            run_source_separation()
+            print("Processing completed.\n")
