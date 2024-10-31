@@ -73,10 +73,10 @@ class TriadExtractor:
     def extract_chords_on_beat(self, chroma, sr, beats):
         chord_progression = []
         previous_chord = None
-
-        for i in range(len(beats) - 1):
+        beatLength = 1
+        for i in range(0, len(beats) - beatLength, beatLength):
             start_time = beats[i]
-            end_time = beats[i + 1]
+            end_time = beats[i + beatLength]
             frame_start = librosa.time_to_frames(start_time, sr=sr, hop_length=self.hop_length)
             frame_end = librosa.time_to_frames(end_time, sr=sr, hop_length=self.hop_length)
 
