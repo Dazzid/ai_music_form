@@ -113,14 +113,21 @@ def plotWaveform(y, sr, chords, bars, bound_frames, new_bound_segs, size_x, size
 def plotChordsBars(chords, bars, bound_frames, bound_segs, size_x=40, size_y=5):
     # Choose a colormap from Matplotlib
     section_colormap_name = 'rainbow'  # You can change this to any colormap name, e.g., 'tab20', 'viridis', 'Blues', etc.
-
+    
+    # Identify unique labels in the order they first appear
+    unique_labels = []
+    for label in bound_segs:
+        if label not in unique_labels:
+            unique_labels.append(label)
+    
     # Choose colormaps from Matplotlib
-    section_colormap = plt.get_cmap(section_colormap_name)
+    section_colormap = plt.get_cmap(section_colormap_name, len(unique_labels) + 1)
     num_colors = len(set(bound_segs))
     custom_colors = section_colormap(np.linspace(0, 1, num_colors))
 
     # Convert bound frames to times
     bound_times = librosa.frames_to_time(bound_frames)
+    
 
     # Plot the waveform
     fig, ax = plt.subplots(figsize=(size_x, size_y))
