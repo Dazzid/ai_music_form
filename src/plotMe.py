@@ -24,8 +24,13 @@ def plotWaveform(y, sr, chords, bars, bound_frames, new_bound_segs, size_x, size
     y_downsampled = y[::downsample_factor]
     sr_downsampled = sr // downsample_factor
 
-    # Convert bound frames to times
+    # Convert bound frames to times and filter out negative times
     bound_times = librosa.frames_to_time(bound_frames, sr=sr)
+    bound_times = [t if t >= 0 else 0 for t in bound_times]
+
+    # Calculate the duration to append for the last interval
+    total_duration = librosa.get_duration(y=y, sr=sr)
+    bound_times = bound_times + [total_duration] if bound_times[-1] < total_duration else bound_times
 
     # Plot the waveform
     fig, ax = plt.subplots(figsize=(size_x, size_y))
@@ -33,20 +38,26 @@ def plotWaveform(y, sr, chords, bars, bound_frames, new_bound_segs, size_x, size
 
     # Plot section boundaries with custom colors
     for interval, label in zip(
-        zip(bound_times, np.append(bound_times[1:], librosa.get_duration(y=y, sr=sr))),
+        zip(bound_times, bound_times[1:]),
         new_bound_segs
     ):
+        # Ensure interval times are non-negative
+        start, end = interval
+        start = max(start, 0)
+        end = max(end, 0)
+        
         color_idx = label % len(custom_colors)  # Ensure we don't exceed the color map length
         rect = patches.Rectangle(
-            (interval[0], ax.get_ylim()[0]),
-            interval[1] - interval[0],
+            (start, ax.get_ylim()[0]),
+            end - start,
             ax.get_ylim()[1] - ax.get_ylim()[0],
             facecolor=custom_colors[color_idx], 
             alpha=0.4
         )
         ax.add_patch(rect)
+        
         # Add section label text at the midpoint of the section
-        midpoint = (interval[0] + interval[1]) / 2
+        midpoint = (start + end) / 2
         ax.text(
             midpoint, 
             0, 
@@ -59,7 +70,9 @@ def plotWaveform(y, sr, chords, bars, bound_frames, new_bound_segs, size_x, size
         )
 
     # **Fixed Iteration Over All Chords**
-    for chord in chords:
+    # Filter out chords with negative timestamps
+    valid_chords = [chord for chord in chords if chord.timestamp >= 0]
+    for chord in valid_chords:
         ax.text(
             chord.timestamp, 
             ax.get_ylim()[1] + 0.05, 
@@ -72,7 +85,9 @@ def plotWaveform(y, sr, chords, bars, bound_frames, new_bound_segs, size_x, size
         )
 
     # Plot vertical lines for each bar
-    for i, bar in enumerate(bars, start=1):
+    # Filter out bars with negative start times
+    valid_bars = [bar for bar in bars if bar[0] >= 0]
+    for i, bar in enumerate(valid_bars, start=1):
         ax.axvline(x=bar[0], color='#555555', linestyle='dotted', linewidth=0.5)
         ax.text(
             bar[0] + 0.01, 
@@ -107,6 +122,10 @@ def plotWaveform(y, sr, chords, bars, bound_frames, new_bound_segs, size_x, size
     ax.set_ylabel('Amplitude')
     ax.set_title('')
 
+    # Ensure the x-axis starts at zero
+    ax.set_xlim(left=0, right=total_duration)
+
+    plt.tight_layout()
     plt.show()
 
 #--------------------------------------------------------------------------------

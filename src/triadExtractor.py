@@ -28,7 +28,7 @@ class TriadExtractor:
         weights[-1] = self.N_template
         return weights
 
-    def extract_chords(self, song_path, threshold=0.3, check_on_beat=False):
+    def extract_chords(self, song_path, beat_step, threshold=0.3, check_on_beat=False):
         y, sr = librosa.load(song_path)
         y = librosa.effects.harmonic(y, margin=1)
         chroma = librosa.feature.chroma_cqt(
@@ -54,7 +54,7 @@ class TriadExtractor:
                     avg_beat_duration = 60.0 / tempo[0]
                 else:
                     avg_beat_duration = 0.5  # Fallback value
-            chord_progression = self.extract_chords_on_beat(chroma, sr, beats)
+            chord_progression = self.extract_chords_on_beat(chroma, sr, beats, beat_step)
         else:
             chord_progression = self.extract_chords_viterbi(chroma, sr)
             avg_beat_duration = 0.5  # Default value when not checking on beats
@@ -70,10 +70,10 @@ class TriadExtractor:
             for chord, timestamp in updated_cp
         ]
 
-    def extract_chords_on_beat(self, chroma, sr, beats):
+    def extract_chords_on_beat(self, chroma, sr, beats, beat_step=2):
         chord_progression = []
         previous_chord = None
-        beatLength = 1
+        beatLength = beat_step
         for i in range(0, len(beats) - beatLength, beatLength):
             start_time = beats[i]
             end_time = beats[i + beatLength]
