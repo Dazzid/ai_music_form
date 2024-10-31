@@ -4,5 +4,6 @@ eval "$(ssh-agent -s)".pub
 #cache
 src/__pycache__/*
 
-assets/
+
 samples/
+
