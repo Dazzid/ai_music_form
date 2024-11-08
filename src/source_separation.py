@@ -36,12 +36,13 @@ def setup(song_path_, collection_):
     # Construct the output directory path
     base_dir = os.path.dirname(os.path.dirname(song_path))  # Get the path up to the collection directory
     output_dir = os.path.join(base_dir, 'segmented', song_id)
-
+  
     # Create the output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(os.path.join(output_dir, 'audio'), exist_ok=True)  # Create 'audio' subdirectory
 
-    print(f"Song path set to: {song_path}")
-    print(f"Output directory set to: {output_dir}")
+    #print(f"Song path set to: {song_path}")
+    #print(f"Output directory set to: {output_dir}")
 
 # Utility Functions
 def load_audio(filepath):
@@ -169,7 +170,7 @@ def output_results(predicted_source: torch.Tensor, source_name: str, sample_rate
     source_filename_map = {
         'bass': 'bass.wav',
         'drums': 'drums.wav',
-        'other': 'other.wav',
+        'other': 'harmony.wav',
         'vocals': 'vocals.wav'
     }
 
@@ -177,7 +178,7 @@ def output_results(predicted_source: torch.Tensor, source_name: str, sample_rate
     output_filename = source_filename_map.get(source_name, f"{source_name}.wav")
 
     # Save the predicted audio to a file
-    output_path = os.path.join(output_dir, output_filename)
+    output_path = os.path.join(output_dir, 'audio', output_filename)
 
     # Ensure predicted_source is 2D (channels, samples)
     if predicted_source.ndim == 1:
@@ -185,7 +186,7 @@ def output_results(predicted_source: torch.Tensor, source_name: str, sample_rate
 
     # Move tensor to CPU before saving
     torchaudio.save(output_path, predicted_source.cpu(), sample_rate)
-    print(f"Saved {source_name} to {output_path}")
+    #print(f"Saved {source_name} to {output_path}")
 
     # Return the predicted audio for listening in Jupyter Notebook (optional)
     # Remove the return statement if not using Jupyter Notebook
@@ -254,7 +255,7 @@ def run_source_separation(verbose=False):
     #print(f"Separated sources keys: {list(separated_sources_dict.keys())}")
 
     # Step 6: Analyze and Output results
-    print("Analyzing and outputting results...")
+    print("\nAnalyzing and outputting results...")
 
     # Iterate through each source and process
     for source_name in sources_list:
@@ -265,10 +266,10 @@ def run_source_separation(verbose=False):
         # Output results
         output_results(separated_source, source_name, sample_rate)
 
-    print("\nSource separation completed successfully!")
+    print("Source separation completed successfully!")
     end_time = time.perf_counter()    # End timing
     elapsed_time = end_time - start_time
-    print(f"\nTotal time taken: {elapsed_time:.2f} seconds")
+    print(f"Time taken: {elapsed_time:.2f} seconds")
 
 # Run the workflow with timing
 if __name__ == "__main__":
